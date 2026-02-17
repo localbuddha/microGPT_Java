@@ -21,7 +21,7 @@ public class MinimalGPT {
     public static void main(String[] args) throws Exception {
 
         // Let there be an input dataset `docs`: List<String> of documents (e.g., a dataset of names)
-        Path path = Paths.get("input.txt");
+        Path path = Paths.get("input_company.txt");
         if (!Files.exists(path)) {
             String namesUrl = "https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt";
             try (InputStream in = URI.create(namesUrl).toURL().openStream()) {
@@ -122,7 +122,7 @@ public class MinimalGPT {
         }
 
         // Inference: may the model babble back to us.
-        double temperature = 0.5; // in (0, 1], control the "creativity" of generated text, low to high
+        double temperature = 0.25; // in (0, 1], control the "creativity" of generated text, low to high
         System.out.println("\n--- inference (new, hallucinated names) ---");
         for (int sampleIdx = 0; sampleIdx < 20; sampleIdx++) {
             List<List<Value[]>> keys = Value.createNestedList(nLayer);
