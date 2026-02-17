@@ -1,7 +1,7 @@
 import java.io.InputStream;
 import java.net.URI;
-import java.net.URL;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -20,58 +20,48 @@ public class MinimalGPT {
 
     public static void main(String[] args) throws Exception {
 
-        // Let there be an input dataset `docs`: List<String> of documents (e.g. a dataset of names)
-        if (!Files.exists(Paths.get("input.txt"))) {
+        // Let there be an input dataset `docs`: List<String> of documents (e.g., a dataset of names)
+        Path path = Paths.get("input.txt");
+        if (!Files.exists(path)) {
             String namesUrl = "https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt";
             try (InputStream in = URI.create(namesUrl).toURL().openStream()) {
-                Files.copy(in, Paths.get("input.txt"));
+                Files.copy(in, path);
             }
         }
 
-        List<String> docs = Files.readAllLines(Paths.get("input.txt")).stream()
-                .map(String::strip)
-                .filter(l -> !l.isEmpty())
-                .collect(Collectors.toList());
+        List<String> docs = Files.readAllLines(path).stream().map(String::strip).filter(l -> !l.isEmpty()).collect(Collectors.toList());
         Collections.shuffle(docs, random);
         System.out.println("num docs: " + docs.size());
 
         // Let there be a Tokenizer to translate strings to discrete symbols and back
-        List<Character> uchars = docs.stream()
-                .flatMapToInt(String::chars)
-                .distinct()
-                .sorted()
-                .mapToObj(c -> (char) c)
-                .toList();
-        int BOS = uchars.size(); // token id for the special Beginning of Sequence (BOS) token
-        int vocabSize = uchars.size() + 1; // total number of unique tokens, +1 is for BOS
+        List<Character> uChars = docs.stream().flatMapToInt(String::chars).distinct().sorted().mapToObj(c -> (char) c).toList();
+        int BOS = uChars.size(); // token id for the special Beginning of Sequence (BOS) token
+        int vocabSize = uChars.size() + 1; // total number of unique tokens, +1 is for BOS
         System.out.println("vocab size: " + vocabSize);
 
-        // Initialize the parameters, to store the knowledge of the model
-        int nEmbd = 16;      // embedding dimension
+        // Initialize the parameters to store the knowledge of the model
+        int nEmbed = 16;      // embedding dimension
         int nHead = 4;       // number of attention heads
         int nLayer = 1;      // number of layers
         int blockSize = 16;  // maximum sequence length
-        int headDim = nEmbd / nHead; // dimension of each head
+        int headDim = nEmbed / nHead; // dimension of each head
 
         Map<String, Value[][]> stateDict = new HashMap<>();
-        stateDict.put("wte", matrix(vocabSize, nEmbd, 0.08));
-        stateDict.put("wpe", matrix(blockSize, nEmbd, 0.08));
-        stateDict.put("lm_head", matrix(vocabSize, nEmbd, 0.08));
+        stateDict.put("wte", matrix(vocabSize, nEmbed));
+        stateDict.put("wpe", matrix(blockSize, nEmbed));
+        stateDict.put("lm_head", matrix(vocabSize, nEmbed));
 
         for (int i = 0; i < nLayer; i++) {
-            stateDict.put("layer" + i + ".attn_wq", matrix(nEmbd, nEmbd, 0.08));
-            stateDict.put("layer" + i + ".attn_wk", matrix(nEmbd, nEmbd, 0.08));
-            stateDict.put("layer" + i + ".attn_wv", matrix(nEmbd, nEmbd, 0.08));
-            stateDict.put("layer" + i + ".attn_wo", matrix(nEmbd, nEmbd, 0.08));
-            stateDict.put("layer" + i + ".mlp_fc1", matrix(4 * nEmbd, nEmbd, 0.08));
-            stateDict.put("layer" + i + ".mlp_fc2", matrix(nEmbd, 4 * nEmbd, 0.08));
+            stateDict.put("layer" + i + ".attn_wq", matrix(nEmbed, nEmbed));
+            stateDict.put("layer" + i + ".attn_wk", matrix(nEmbed, nEmbed));
+            stateDict.put("layer" + i + ".attn_wv", matrix(nEmbed, nEmbed));
+            stateDict.put("layer" + i + ".attn_wo", matrix(nEmbed, nEmbed));
+            stateDict.put("layer" + i + ".mlp_fc1", matrix(4 * nEmbed, nEmbed));
+            stateDict.put("layer" + i + ".mlp_fc2", matrix(nEmbed, 4 * nEmbed));
         }
 
         // flatten params into a single List<Value>
-        List<Value> params = stateDict.values().stream()
-                .flatMap(Arrays::stream)
-                .flatMap(Arrays::stream)
-                .toList();
+        List<Value> params = stateDict.values().stream().flatMap(Arrays::stream).flatMap(Arrays::stream).toList();
         System.out.println("num params: " + params.size());
 
         // Let there be Adam, the blessed optimizer and its buffers
@@ -83,12 +73,12 @@ public class MinimalGPT {
         int numSteps = 1000; // number of training steps
         for (int step = 0; step < numSteps; step++) {
 
-            // Take single document, tokenize it, surround it with BOS special token on both sides
+            // Take a single document, tokenize it, surround it with BOS special token on both sides
             String doc = docs.get(step % docs.size());
             List<Integer> tokens = new ArrayList<>();
             tokens.add(BOS);
             for (char ch : doc.toCharArray()) {
-                tokens.add(uchars.indexOf(ch));
+                tokens.add(uChars.indexOf(ch));
             }
             tokens.add(BOS);
             int n = Math.min(blockSize, tokens.size() - 1);
@@ -105,18 +95,16 @@ public class MinimalGPT {
             for (int posId = 0; posId < n; posId++) {
                 int tokenId = tokens.get(posId);
                 int targetId = tokens.get(posId + 1);
-                Value[] logits = gpt(tokenId, posId, keys, values, stateDict, nLayer, nEmbd, nHead, headDim);
+                Value[] logits = gpt(tokenId, posId, keys, values, stateDict, nLayer, nEmbed, nHead, headDim);
                 Value[] probs = softmax(logits);
                 Value lossT = probs[targetId].log().neg();
                 losses.add(lossT);
             }
-            Value loss = losses.stream()
-                    .reduce(Value::add)
-                    .map(sum -> sum.div(n))
-                    .get(); // final average loss over the document sequence. May yours be low.
+            Value loss = losses.stream().reduce(Value::add).map(sum -> sum.div(n)).orElseThrow(() -> new IllegalArgumentException("losses stream cannot be empty"));
 
-            // Backward the loss, calculating the gradients with respect to all model parameters
+// Backward the loss, calculating the gradients with respect to all model parameters
             loss.backward();
+
 
             // Adam optimizer update: update the model parameters based on the corresponding gradients
             double lrT = learningRate * (1.0 - (double) step / numSteps); // linear learning rate decay
@@ -133,31 +121,25 @@ public class MinimalGPT {
             System.out.printf("step %4d / %4d | loss %.4f%n", step + 1, numSteps, loss.data);
         }
 
-        // Inference: may the model babble back to us
+        // Inference: may the model babble back to us.
         double temperature = 0.5; // in (0, 1], control the "creativity" of generated text, low to high
         System.out.println("\n--- inference (new, hallucinated names) ---");
         for (int sampleIdx = 0; sampleIdx < 20; sampleIdx++) {
-            List<List<Value[]>> keys = new ArrayList<>();
-            List<List<Value[]>> values = new ArrayList<>();
-            for (int i = 0; i < nLayer; i++) {
-                keys.add(new ArrayList<>());
-                values.add(new ArrayList<>());
-            }
+            List<List<Value[]>> keys = Value.createNestedList(nLayer);
+            List<List<Value[]>> values = Value.createNestedList(nLayer);
 
             int tokenId = BOS;
             StringBuilder sample = new StringBuilder();
             for (int posId = 0; posId < blockSize; posId++) {
-                Value[] logits = gpt(tokenId, posId, keys, values, stateDict, nLayer, nEmbd, nHead, headDim);
-                Value[] scaledLogits = Arrays.stream(logits)
-                        .map(l -> l.div(temperature))
-                        .toArray(Value[]::new);
+                Value[] logits = gpt(tokenId, posId, keys, values, stateDict, nLayer, nEmbed, nHead, headDim);
+                Value[] scaledLogits = Arrays.stream(logits).map(l -> l.div(temperature)).toArray(Value[]::new);
                 Value[] probs = softmax(scaledLogits);
                 double[] weights = Arrays.stream(probs).mapToDouble(p -> p.data).toArray();
                 tokenId = weightedChoice(IntStream.range(0, vocabSize).toArray(), weights);
                 if (tokenId == BOS) {
                     break;
                 }
-                sample.append(uchars.get(tokenId));
+                sample.append(uChars.get(tokenId));
             }
             System.out.printf("sample %2d: %s%n", sampleIdx + 1, sample);
         }
@@ -178,26 +160,23 @@ public class MinimalGPT {
     }
 
     private static Value[] softmax(Value[] logits) {
-        double maxVal = Arrays.stream(logits).mapToDouble(v -> v.data).max().getAsDouble();
-        Value[] exps = Arrays.stream(logits)
-                .map(val -> val.sub(maxVal).exp())
-                .toArray(Value[]::new);
-        Value total = Arrays.stream(exps).reduce(Value::add).get();
+        double maxVal = Arrays.stream(logits).mapToDouble(v -> v.data).max().orElseThrow(() -> new IllegalArgumentException("logits array cannot be empty"));
+
+        Value[] exps = Arrays.stream(logits).map(val -> val.sub(maxVal).exp()).toArray(Value[]::new);
+
+        Value total = Arrays.stream(exps).reduce(Value::add).orElseThrow(() -> new IllegalArgumentException("exps array cannot be empty"));
+
         return Arrays.stream(exps).map(e -> e.div(total)).toArray(Value[]::new);
     }
 
     private static Value[] rmsnorm(Value[] x) {
-        Value ms = Arrays.stream(x)
-                .map(xi -> xi.mul(xi))
-                .reduce(Value::add)
-                .map(sum -> sum.div(x.length))
-                .get();
+        Value ms = Arrays.stream(x).map(xi -> xi.mul(xi)).reduce(Value::add).map(sum -> sum.div(x.length)).orElseThrow(() -> new IllegalArgumentException("x array cannot be empty"));
+
         Value scale = ms.add(1e-5).pow(-0.5);
         return Arrays.stream(x).map(xi -> xi.mul(scale)).toArray(Value[]::new);
     }
 
-    private static Value[] gpt(int tokenId, int posId, List<List<Value[]>> keys, List<List<Value[]>> values,
-                               Map<String, Value[][]> stateDict, int nLayer, int nEmbd, int nHead, int headDim) {
+    private static Value[] gpt(int tokenId, int posId, List<List<Value[]>> keys, List<List<Value[]>> values, Map<String, Value[][]> stateDict, int nLayer, int nEmbd, int nHead, int headDim) {
         Value[] tokEmb = stateDict.get("wte")[tokenId]; // token embedding
         Value[] posEmb = stateDict.get("wpe")[posId]; // position embedding
         Value[] x = new Value[nEmbd];
@@ -220,12 +199,8 @@ public class MinimalGPT {
             for (int h = 0; h < nHead; h++) {
                 int hs = h * headDim;
                 Value[] qH = Arrays.copyOfRange(q, hs, hs + headDim);
-                List<Value[]> kH = keys.get(li).stream()
-                        .map(ki -> Arrays.copyOfRange(ki, hs, hs + headDim))
-                        .toList();
-                List<Value[]> vH = values.get(li).stream()
-                        .map(vi -> Arrays.copyOfRange(vi, hs, hs + headDim))
-                        .toList();
+                List<Value[]> kH = keys.get(li).stream().map(ki -> Arrays.copyOfRange(ki, hs, hs + headDim)).toList();
+                List<Value[]> vH = values.get(li).stream().map(vi -> Arrays.copyOfRange(vi, hs, hs + headDim)).toList();
 
                 Value[] attnLogits = new Value[kH.size()];
                 for (int t = 0; t < kH.size(); t++) {
@@ -265,11 +240,11 @@ public class MinimalGPT {
     }
 
     // Helper methods
-    private static Value[][] matrix(int nout, int nin, double std) {
-        Value[][] mat = new Value[nout][nin];
-        for (int i = 0; i < nout; i++) {
-            for (int j = 0; j < nin; j++) {
-                mat[i][j] = new Value(random.nextGaussian() * std);
+    private static Value[][] matrix(int nOut, int nIn) {
+        Value[][] mat = new Value[nOut][nIn];
+        for (int i = 0; i < nOut; i++) {
+            for (int j = 0; j < nIn; j++) {
+                mat[i][j] = new Value(random.nextGaussian() * 0.08);
             }
         }
         return mat;
@@ -288,7 +263,7 @@ public class MinimalGPT {
         return choices[choices.length - 1];
     }
 
-    // Let there be Autograd, to recursively apply the chain rule through a computation graph
+    // Let there be Autograd to recursively apply the chain rule through a computation graph
     static class Value {
         double data;              // scalar value of this node calculated during forward pass
         double grad;              // derivative of the loss w.r.t. this node, calculated in backward pass
@@ -306,12 +281,16 @@ public class MinimalGPT {
             this.localGrads = localGrads;
         }
 
+        private static <T> List<List<T>> createNestedList(int size) {
+            List<List<T>> result = new ArrayList<>(size);
+            for (int i = 0; i < size; i++) {
+                result.add(new ArrayList<>());
+            }
+            return result;
+        }
+
         public Value add(Value other) {
-            return new Value(
-                    this.data + other.data,
-                    Arrays.asList(this, other),
-                    Arrays.asList(1.0, 1.0)
-            );
+            return new Value(this.data + other.data, Arrays.asList(this, other), Arrays.asList(1.0, 1.0));
         }
 
         public Value add(double other) {
@@ -319,11 +298,7 @@ public class MinimalGPT {
         }
 
         public Value mul(Value other) {
-            return new Value(
-                    this.data * other.data,
-                    Arrays.asList(this, other),
-                    Arrays.asList(other.data, this.data)
-            );
+            return new Value(this.data * other.data, Arrays.asList(this, other), Arrays.asList(other.data, this.data));
         }
 
         public Value mul(double other) {
@@ -331,44 +306,24 @@ public class MinimalGPT {
         }
 
         public Value pow(double other) {
-            return new Value(
-                    Math.pow(this.data, other),
-                    Collections.singletonList(this),
-                    Collections.singletonList(other * Math.pow(this.data, other - 1))
-            );
+            return new Value(Math.pow(this.data, other), Collections.singletonList(this), Collections.singletonList(other * Math.pow(this.data, other - 1)));
         }
 
         public Value log() {
-            return new Value(
-                    Math.log(this.data),
-                    Collections.singletonList(this),
-                    Collections.singletonList(1.0 / this.data)
-            );
+            return new Value(Math.log(this.data), Collections.singletonList(this), Collections.singletonList(1.0 / this.data));
         }
 
         public Value exp() {
             double expVal = Math.exp(this.data);
-            return new Value(
-                    expVal,
-                    Collections.singletonList(this),
-                    Collections.singletonList(expVal)
-            );
+            return new Value(expVal, Collections.singletonList(this), Collections.singletonList(expVal));
         }
 
         public Value relu() {
-            return new Value(
-                    Math.max(0, this.data),
-                    Collections.singletonList(this),
-                    Collections.singletonList(this.data > 0 ? 1.0 : 0.0)
-            );
+            return new Value(Math.max(0, this.data), Collections.singletonList(this), Collections.singletonList(this.data > 0 ? 1.0 : 0.0));
         }
 
         public Value neg() {
             return mul(-1);
-        }
-
-        public Value sub(Value other) {
-            return add(other.neg());
         }
 
         public Value sub(double other) {
